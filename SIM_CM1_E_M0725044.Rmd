@@ -1,0 +1,437 @@
+---
+title: "Analisis Popularitas Aktor dan Pola Permintaan Film Berdasarkan Wilayah Pelanggan pada Database Sakila"
+author: "Lutfi Rahmayanti (M0725044)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    number_sections: true
+    theme: flatly
+    css: custom.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5.5
+)
+
+library(DBI)
+library(odbc)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(stringr)
+```
+
+<div class="hero-banner">
+  <p class="eyebrow">Laporan Analisis Data — Sakila Database</p>
+  <h1>Analisis Popularitas Aktor dan Pola Permintaan Film Berdasarkan Wilayah Pelanggan pada Database Sakila</h1>
+  <p class="subtitle">Membaca pola permintaan pelanggan melalui aktor yang berkontribusi besar dalam transaksi peminjaman film serta wilayah yang paling aktif dalam aktivitas penyewaan.</p>
+  <div class="identity-card">
+    Nama  : Lutfi Rahmayanti
+    NIM   : M0725044
+    Kelas : B
+  </div>
+</div>
+
+# Pendahuluan
+
+Database **Sakila** merupakan basis data simulasi yang menggambarkan aktivitas bisnis penyewaan film. Di dalamnya terdapat berbagai informasi yang saling terhubung, mulai dari data film, aktor, pelanggan, transaksi peminjaman film, hingga lokasi pelanggan yang melakukan transaksi.
+
+Dalam industri hiburan, memahami preferensi pelanggan menjadi salah satu aspek penting dalam pengambilan keputusan bisnis. Informasi mengenai aktor yang berkontribusi besar pada film yang dipilih pelanggan dapat digunakan sebagai dasar dalam menyusun strategi promosi, rekomendasi katalog, maupun pengelolaan stok film. Namun demikian, popularitas seorang aktor tidak selalu tersebar secara merata pada seluruh wilayah pelanggan. Beberapa pasar dapat menunjukkan tingkat permintaan yang lebih tinggi dibandingkan wilayah lainnya.
+
+Berdasarkan latar belakang tersebut, laporan ini berfokus pada analisis hubungan antara popularitas aktor dan persebaran geografis pelanggan. Analisis dilakukan dengan memanfaatkan data transaksi peminjaman film pada database Sakila untuk mengidentifikasi aktor yang paling diminati pelanggan serta wilayah yang memberikan kontribusi terbesar terhadap aktivitas penyewaan film.
+
+# Tujuan Analisis
+
+Analisis ini disusun untuk menjawab tiga pertanyaan utama berikut.
+
+1. Aktor mana yang memiliki tingkat permintaan tertinggi berdasarkan jumlah transaksi peminjaman film?
+2. Negara mana yang memberikan kontribusi terbesar terhadap transaksi film yang dibintangi aktor dengan popularitas tertinggi?
+3. Apakah terdapat pola konsentrasi pasar yang dapat dimanfaatkan untuk menyusun strategi promosi dan rekomendasi film yang lebih tepat sasaran?
+
+# Deskripsi Dataset dan Relasi Data
+
+Data yang digunakan berasal dari **Sakila Sample Database**. Tidak seluruh tabel digunakan, karena analisis difokuskan pada hubungan antara aktor, film, transaksi peminjaman film, pelanggan, dan lokasi pelanggan.
+
+## Memahami Konteks Data Sakila
+
+Sebelum masuk ke proses analisis, penting untuk memahami konteks data yang digunakan. Database Sakila tidak menggambarkan aktivitas menonton film seperti pada bioskop ataupun layanan streaming digital. Sebaliknya, Sakila mensimulasikan sistem penyewaan film, yaitu ketika pelanggan meminjam salinan film dari sebuah toko dan mengembalikannya setelah jangka waktu tertentu.
+
+Dengan demikian, istilah transaksi pada laporan ini merujuk pada aktivitas peminjaman film oleh pelanggan. Semakin sering sebuah film dipinjam, semakin tinggi tingkat permintaan pelanggan terhadap film tersebut.
+
+Secara sederhana, alur transaksi dalam database Sakila dapat digambarkan sebagai berikut.
+
+<div class="transaction-flow">
+  <div class="flow-card">Customer</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-card">Meminjam Film</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-card">Transaksi Peminjaman<br><span>(Rental)</span></div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-card">Mengembalikan Film</div>
+</div>
+
+Karena database tidak menyediakan informasi mengenai jumlah penonton film, analisis ini menggunakan jumlah transaksi peminjaman sebagai indikator untuk melihat tingkat permintaan pelanggan terhadap film yang dibintangi aktor tertentu.
+
+## Tabel yang Digunakan
+
+Tabel yang digunakan dalam analisis ini adalah sebagai berikut.
+
+```{r table-data-source}
+data.frame(
+  Tabel = c("actor", "film_actor", "inventory", "rental", "customer", "address", "city", "country"),
+  Peran_dalam_Analisis = c(
+    "Menyimpan identitas aktor.",
+    "Menghubungkan aktor dengan film yang dibintangi.",
+    "Menunjukkan salinan film yang tersedia untuk disewa.",
+    "Menyimpan transaksi penyewaan film.",
+    "Menyimpan pelanggan yang melakukan transaksi.",
+    "Menghubungkan pelanggan dengan alamat.",
+    "Menunjukkan kota pelanggan.",
+    "Menunjukkan negara pelanggan."
+  )
+) %>%
+  kable("html", caption = "Tabel yang Digunakan dalam Analisis") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+Secara sederhana, alur relasi data yang digunakan dapat dituliskan sebagai berikut.
+
+<div class="flow-box">
+Actor → Film Actor → Inventory → Rental → Customer → Address → City → Country
+</div>
+
+# Metode Analisis
+
+Popularitas aktor pada laporan ini diukur menggunakan jumlah transaksi peminjaman film yang melibatkan film-film yang dibintangi aktor tersebut. Semakin tinggi jumlah transaksi yang tercatat, semakin besar kontribusi aktor terhadap aktivitas penyewaan film pada database Sakila.
+
+$$
+Popularity_i = \sum_{j=1}^{n} Rental_{ij}
+$$
+
+dengan keterangan:
+
+- \(Popularity_i\) = tingkat popularitas aktor ke-\(i\),
+- \(Transaction_{ij}\) = transaksi peminjaman ke-\(j\) yang berkaitan dengan aktor ke-\(i\),
+- \(n\) = jumlah transaksi peminjaman yang tercatat.
+
+Selain itu, analisis juga menghitung kontribusi masing-masing negara terhadap total transaksi yang melibatkan aktor dengan popularitas tertinggi. Pengukuran ini digunakan untuk melihat apakah aktivitas peminjaman film terkonsentrasi pada wilayah tertentu.
+
+$$
+Share_{c} = \frac{Views_c}{\sum_{c=1}^{k} Views_c} \times 100\%
+$$
+
+dengan keterangan:
+
+- \(Share_c\) = persentase kontribusi negara ke-\(c\),
+- \(Transaction_c\) = jumlah transaksi peminjaman dari negara ke-\(c\),
+- \(k\) = jumlah negara yang dianalisis.
+
+# Koneksi Database
+
+Analisis dilakukan menggunakan database Sakila yang tersimpan pada sistem manajemen basis data MySQL. Proses koneksi dijalankan secara otomatis pada tahap awal sehingga data dapat diakses dan diolah menggunakan bahasa pemrograman R. Detail konfigurasi koneksi tidak ditampilkan pada laporan untuk menjaga keamanan informasi sistem.
+
+```{r koneksi-database, include=FALSE}
+con <- dbConnect(
+  odbc(),
+  Driver   = "MySQL ODBC 8.0 ANSI Driver",
+  Server   = "127.0.0.1",
+  UID      = "root",
+  PWD      = "Luutfirahma15_2",
+  Port     = 3306,
+  Database = "sakila"
+)
+```
+
+# Pengambilan Data
+
+## Data Popularitas Aktor
+
+Query berikut menghitung total transaksi peminjaman film berdasarkan aktor. Setiap transaksi dihitung dari hubungan antara aktor, film, stok film, dan tabel peminjaman.
+
+```{r query-top-actor}
+library(stringr)
+library(scales)
+
+query_actor <- "
+SELECT
+  a.actor_id,
+  CONCAT(a.first_name, ' ', a.last_name) AS actor_name,
+  COUNT(r.rental_id) AS total_rentals,
+  COUNT(DISTINCT fa.film_id) AS total_films
+FROM actor a
+JOIN film_actor fa ON a.actor_id = fa.actor_id
+JOIN inventory i ON fa.film_id = i.film_id
+JOIN rental r ON i.inventory_id = r.inventory_id
+GROUP BY a.actor_id, actor_name
+ORDER BY total_rentals DESC;
+"
+
+actor_popularity <- dbGetQuery(con, query_actor)
+
+top_actor <- actor_popularity %>%
+  slice_max(total_rentals, n = 10) %>%
+  mutate(
+    rental_per_film = total_rentals / total_films,
+    actor_name = str_to_title(actor_name)
+  )
+
+top_actor <- top_actor %>%
+  mutate(
+    total_rentals = as.numeric(total_rentals)
+  )
+
+top_actor %>%
+  mutate(
+    total_rentals = scales::comma(total_rentals),
+    rental_per_film = round(rental_per_film, 2)
+  ) %>%
+  select(
+    `Nama Aktor` = actor_name,
+    `Total Rental` = total_rentals,
+    `Jumlah Film` = total_films,
+    `Rata-rata Rental per Film` = rental_per_film
+  ) %>%
+  kable("html", caption = "Top 10 Aktor Berdasarkan Jumlah Transaksi Rental") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+## Data Aktor, Negara, dan Transaksi Peminjaman Film
+
+Query berikut mengambil data transaksi aktor berdasarkan negara pelanggan. Data ini digunakan untuk melihat apakah popularitas aktor tersebar merata atau lebih kuat pada wilayah tertentu.
+
+```{r query-geo}
+query_geo <- "
+SELECT
+  CONCAT(a.first_name, ' ', a.last_name) AS actor_name,
+  co.country,
+  COUNT(r.rental_id) AS total_rentals
+FROM actor a
+JOIN film_actor fa ON a.actor_id = fa.actor_id
+JOIN inventory i ON fa.film_id = i.film_id
+JOIN rental r ON i.inventory_id = r.inventory_id
+JOIN customer cu ON r.customer_id = cu.customer_id
+JOIN address ad ON cu.address_id = ad.address_id
+JOIN city ci ON ad.city_id = ci.city_id
+JOIN country co ON ci.country_id = co.country_id
+GROUP BY actor_name, co.country
+ORDER BY total_rentals DESC;
+"
+
+geo_actor <- dbGetQuery(con, query_geo) %>%
+  mutate(actor_name = str_to_title(actor_name))
+
+geo_actor %>%
+  head(10) %>%
+  kable("html", caption = "Contoh Data Transaksi Rental Aktor Berdasarkan Negara") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+# Statistik Deskriptif
+
+Statistik deskriptif digunakan untuk memperoleh gambaran awal mengenai sebaran jumlah peminjaman pada kombinasi aktor dan negara.
+
+```{r statistik-deskriptif}
+desc_stats <- geo_actor %>%
+  summarise(
+    `Rata-rata Rental` = mean(total_rentals),
+    `Median Rental` = median(total_rentals),
+    `Rental Tertinggi` = max(total_rentals),
+    `Rental Terendah` = min(total_rentals),
+    `Standar Deviasi` = sd(total_rentals)
+  )
+
+desc_stats %>%
+  mutate(across(everything(), ~ round(.x, 2))) %>%
+  kable("html", caption = "Statistik Deskriptif Jumlah Rental Aktor per Negara") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+Nilai rata-rata dan median membantu menunjukkan apakah transaksi peminjaman film cenderung merata atau hanya didominasi oleh beberapa kombinasi aktor-negara tertentu. Jika jarak antara nilai maksimum dan median cukup besar, maka dapat dikatakan bahwa ada beberapa pasar yang jauh lebih aktif dibandingkan pasar lain.
+
+# Visualisasi dan Analisis
+
+## Visualisasi Pertama: Top 10 Aktor Terpopuler
+
+```{r visualisasi-top-actor}
+ggplot(top_actor, aes(x = reorder(actor_name, total_rentals), y = total_rentals)) +
+  geom_col(width = 0.72, fill = "#8FE9A6") +
+  geom_text(
+    aes(label = comma(total_rentals)),
+    hjust = -0.15,
+    size = 3.7,
+    color = "#3B4A54"
+  ) +
+  coord_flip() +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.14))) +
+  labs(
+    title = "Top 10 Aktor dengan Kontribusi Rental Tertinggi",
+    subtitle = "Popularitas dihitung dari total transaksi rental film yang melibatkan masing-masing aktor",
+    x = NULL,
+    y = "Jumlah transaksi rental",
+    caption = "Sumber: Sakila Database"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2F3E46"),
+    plot.subtitle = element_text(color = "#6B7280"),
+    axis.text.y = element_text(face = "bold", color = "#344E41"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Interpretasi Visualisasi Pertama
+
+Grafik di atas memperlihatkan aktor dengan kontribusi transaksi peminjaman film tertinggi. Aktor pada peringkat teratas dapat dipandang sebagai figur yang paling berkontribusi terhadap aktivitas peminjaman film dalam database Sakila. Namun, angka ini tidak hanya menunjukkan popularitas personal aktor, melainkan juga dipengaruhi oleh jumlah film yang dibintangi dan ketersediaan film tersebut dalam inventory.
+
+Oleh karena itu, kolom **rata-rata peminjaman per film** pada tabel sebelumnya penting untuk dibaca bersama grafik. Aktor dengan total peminjaman tinggi tetapi jumlah film sangat banyak belum tentu memiliki daya tarik per film yang paling kuat. Sebaliknya, aktor dengan jumlah film lebih sedikit tetapi rata-rata peminjaman per film tinggi dapat dianggap lebih efisien dalam menarik transaksi.
+
+## Visualisasi Kedua: Negara dengan Kontribusi Jumlah Peminjaman Tertinggi
+
+```{r country-summary}
+top_actor_names <- top_actor$actor_name
+
+country_summary <- geo_actor %>%
+  filter(actor_name %in% top_actor_names) %>%
+  group_by(country) %>%
+  summarise(total_rentals = sum(total_rentals), .groups = "drop") %>%
+  arrange(desc(total_rentals)) %>%
+  slice_head(n = 10) %>%
+  mutate(share = total_rentals / sum(total_rentals))
+
+country_summary <- country_summary %>%
+  mutate(
+    total_rentals = as.numeric(total_rentals)
+  )
+
+country_summary %>%
+  mutate(
+    `Total Rental` = scales::comma(total_rentals),
+    `Kontribusi` = percent(share, accuracy = 0.1)
+  ) %>%
+  select(
+    Negara = country,
+    `Total Rental`,
+    `Kontribusi`
+  ) %>%
+  kable("html", caption = "Top 10 Negara Penyumbang Rental untuk Kelompok Aktor Populer") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+```{r visualisasi-country}
+ggplot(country_summary, aes(x = reorder(country, total_rentals), y = total_rentals)) +
+  geom_col(width = 0.72, fill = "#E6B8A2") +
+  geom_text(
+    aes(label = comma(total_rentals)),
+    hjust = -0.15,
+    size = 3.7,
+    color = "#3B4A54"
+  ) +
+  coord_flip() +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.14))) +
+  labs(
+    title = "Pasar Negara yang Paling Aktif Menyewa Film dari Aktor Populer",
+    subtitle = "Dihitung dari transaksi rental film yang melibatkan top 10 aktor",
+    x = NULL,
+    y = "Jumlah transaksi rental",
+    caption = "Sumber: Sakila Database"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2F3E46"),
+    plot.subtitle = element_text(color = "#6B7280"),
+    axis.text.y = element_text(face = "bold", color = "#7F5539"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Interpretasi Visualisasi Kedua
+
+Visualisasi kedua menunjukkan bahwa transaksi peminjaman film dari kelompok aktor populer tidak tersebar secara acak. Beberapa negara muncul sebagai penyumbang transaksi yang lebih besar dibandingkan negara lainnya. Dalam konteks bisnis, negara-negara pada peringkat atas dapat dianggap sebagai pasar yang responsif terhadap katalog film yang melibatkan aktor populer.
+
+Temuan ini dapat digunakan sebagai dasar segmentasi. Misalnya, toko penyewaan film dapat menempatkan film dari aktor populer pada bagian rekomendasi utama untuk pelanggan dari negara dengan transaksi tinggi. Strategi ini lebih terarah dibandingkan promosi umum, karena didasarkan pada pola transaksi historis.
+
+## Analisis Lanjutan: Heatmap Aktor dan Negara
+
+Heatmap berikut hanya menampilkan kombinasi **top 10 aktor** dan **top 10 negara** agar pola yang terlihat lebih fokus dan tidak terlalu padat.
+
+```{r heatmap-data}
+heatmap_data <- geo_actor %>%
+  filter(actor_name %in% top_actor_names, country %in% country_summary$country) %>%
+  group_by(actor_name, country) %>%
+  summarise(total_rentals = sum(total_rentals), .groups = "drop")
+```
+
+```{r visualisasi-heatmap}
+ggplot(heatmap_data, aes(x = country, y = actor_name, fill = total_rentals)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  geom_text(aes(label = total_rentals), size = 3.1, color = "#2F3E46") +
+  scale_fill_gradient(low = "#F8EDEB", high = "#7D9D9C", labels = comma) +
+  labs(
+    title = "Heatmap Popularitas Aktor pada Negara Utama",
+    subtitle = "Warna yang lebih pekat menunjukkan jumlah transaksi rental yang lebih tinggi",
+    x = "Negara",
+    y = "Aktor",
+    fill = "Total rental",
+    caption = "Sumber: Sakila Database"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2F3E46"),
+    plot.subtitle = element_text(color = "#6B7280"),
+    axis.text.x = element_text(angle = 35, hjust = 1, color = "#4B5563"),
+    axis.text.y = element_text(face = "bold", color = "#344E41"),
+    panel.grid = element_blank(),
+    legend.position = "right"
+  )
+```
+
+### Interpretasi Heatmap
+
+Heatmap memperlihatkan kombinasi aktor dan negara yang memiliki intensitas peminjaman film lebih tinggi. Bagian dengan warna lebih pekat menunjukkan pasangan aktor-negara yang lebih aktif menghasilkan transaksi. Dari sudut pandang manajerial, pola ini dapat dibaca sebagai sinyal bahwa preferensi pelanggan bersifat lokal. Dengan kata lain, aktor yang sangat kuat di satu negara belum tentu memiliki kekuatan yang sama pada negara lain.
+
+Insight utama dari bagian ini adalah bahwa strategi promosi sebaiknya tidak hanya menggunakan daftar aktor terpopuler secara umum. Promosi akan lebih efektif apabila mempertimbangkan wilayah pelanggan. Sebagai contoh, negara dengan warna yang konsisten pekat pada beberapa aktor dapat menjadi target kampanye katalog film bertema aktor populer. Sementara itu, negara dengan pola yang lebih lemah dapat diberi rekomendasi yang lebih beragam, misalnya berdasarkan genre atau kategori film.
+
+# Pembahasan Insight
+
+Berdasarkan hasil analisis, terdapat dua lapisan informasi yang dapat diambil. Pertama, terdapat aktor yang secara agregat memiliki kontribusi besar terhadap transaksi peminjaman film. Aktor-aktor ini dapat diposisikan sebagai **traffic driver**, yaitu figur yang membantu menarik aktivitas penyewaan karena film yang mereka bintangi relatif sering dipilih pelanggan.
+
+Kedua, popularitas tersebut tidak sepenuhnya merata secara geografis. Negara dengan total peminjaman tinggi menunjukkan bahwa pelanggan pada wilayah tersebut lebih aktif berinteraksi dengan katalog film yang dibintangi aktor populer. Hal ini membuka peluang untuk menerapkan strategi promosi berbasis wilayah, seperti menampilkan rekomendasi film aktor populer pada halaman awal pelanggan dari negara tertentu, membuat paket promosi film berdasarkan aktor, atau mengoptimalkan stok inventory untuk film-film yang memiliki potensi peminjaman tinggi.
+
+Analisis ini juga menunjukkan pentingnya membaca angka popularitas secara hati-hati. Total peminjaman yang tinggi dapat dipengaruhi oleh banyak faktor, seperti jumlah film yang dibintangi aktor, jumlah salinan film dalam inventory, dan intensitas transaksi pelanggan pada negara tertentu. Karena itu, hasil analisis lebih tepat digunakan sebagai indikator awal untuk memahami pola permintaan, bukan sebagai satu-satunya ukuran kualitas aktor atau film.
+
+# Kesimpulan
+
+Secara umum, database Sakila menunjukkan bahwa popularitas aktor dapat dianalisis melalui jejak transaksi peminjaman film. Aktor dengan jumlah peminjaman tertinggi memiliki potensi besar untuk dijadikan dasar rekomendasi katalog. Namun, ketika data tersebut dikaitkan dengan lokasi pelanggan, terlihat bahwa pasar tertentu memberikan kontribusi yang lebih kuat dibandingkan pasar lainnya.
+
+Dengan demikian, insight utama dari laporan ini adalah bahwa **strategi promosi film sebaiknya menggabungkan popularitas aktor dan karakteristik geografis pelanggan**. Pendekatan ini membuat promosi menjadi lebih relevan, karena rekomendasi tidak hanya didasarkan pada aktor yang populer secara umum, tetapi juga pada wilayah pelanggan yang terbukti memiliki aktivitas penyewaan film tinggi.
+
+# Saran Pengembangan
+
+Analisis ini masih dapat dikembangkan lebih lanjut dengan menambahkan variabel lain, seperti genre film, durasi peminjaman, pendapatan pembayaran, atau periode waktu transaksi. Dengan tambahan variabel tersebut, analisis dapat menjawab pertanyaan yang lebih luas, misalnya apakah aktor populer juga menghasilkan pendapatan terbesar, atau apakah pola popularitas berubah pada bulan tertentu.
+
+# Penutup Koneksi
+
+```{r close-connection}
+dbDisconnect(con)
+```
+
+# Referensi
+
+1. MySQL. Sakila Sample Database.
+2. R Documentation.
+3. ggplot2 Documentation.
+4. DBI and odbc Package Documentation.
